@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 
+	"github.com/graph-gophers/graphql-go/authorization"
 	"github.com/graph-gophers/graphql-go/errors"
 	"github.com/graph-gophers/graphql-go/internal/common"
 	"github.com/graph-gophers/graphql-go/internal/exec/resolvable"
@@ -14,14 +15,17 @@ import (
 	"github.com/graph-gophers/graphql-go/internal/query"
 	"github.com/graph-gophers/graphql-go/internal/schema"
 	"github.com/graph-gophers/graphql-go/log"
+	"github.com/graph-gophers/graphql-go/ratelimiting"
 	"github.com/graph-gophers/graphql-go/trace"
 )
 
 type Request struct {
 	selected.Request
-	Limiter chan struct{}
-	Tracer  trace.Tracer
-	Logger  log.Logger
+	Limiter     chan struct{}
+	Tracer      trace.Tracer
+	Logger      log.Logger
+	RateLimiter ratelimiting.RateLimiter
+	Authorizor  authorization.Authorizor
 }
 
 func (r *Request) handlePanic(ctx context.Context) {
@@ -171,6 +175,16 @@ func execFieldSelection(ctx context.Context, r *Request, f *fieldToExec, path *p
 
 		if err := traceCtx.Err(); err != nil {
 			return errors.Errorf("%s", err) // don't execute any more resolvers if context got cancelled
+		}
+
+		isRateLimitted := r.RateLimiter.IsLimited(traceCtx, f.field.Name)
+		r.RateLimiter.SaveUsage(traceCtx, f.field.Name, isRateLimitted)
+		if isRateLimitted {
+			return errors.Errorf("Exceed Rate Limited") // don't execute any more if the rate limit exceeded
+		}
+
+		if !r.Authorizor.CanDo(traceCtx, f.field.Name) {
+			return errors.Errorf("Unauthorization") // Stop executing the node if it is not authorized
 		}
 
 		var in []reflect.Value

@@ -6,6 +6,7 @@ import (
 
 	"encoding/json"
 
+	"github.com/graph-gophers/graphql-go/authorization"
 	"github.com/graph-gophers/graphql-go/errors"
 	"github.com/graph-gophers/graphql-go/internal/common"
 	"github.com/graph-gophers/graphql-go/internal/exec"
@@ -16,6 +17,7 @@ import (
 	"github.com/graph-gophers/graphql-go/internal/validation"
 	"github.com/graph-gophers/graphql-go/introspection"
 	"github.com/graph-gophers/graphql-go/log"
+	"github.com/graph-gophers/graphql-go/ratelimiting"
 	"github.com/graph-gophers/graphql-go/trace"
 )
 
@@ -68,6 +70,8 @@ type Schema struct {
 	tracer           trace.Tracer
 	validationTracer trace.ValidationTracer
 	logger           log.Logger
+	ratelimiter      ratelimiting.RateLimiter
+	authorizor       authorization.Authorizor
 }
 
 // SchemaOpt is an option to pass to ParseSchema or MustParseSchema.
@@ -91,6 +95,20 @@ func MaxParallelism(n int) SchemaOpt {
 func Tracer(tracer trace.Tracer) SchemaOpt {
 	return func(s *Schema) {
 		s.tracer = tracer
+	}
+}
+
+// Authorizor is used to add authorization checking per node. It defaults to authorizor.NoOp.
+func Authorizor(authorizor authorization.Authorizor) SchemaOpt {
+	return func(s *Schema) {
+		s.authorizor = authorizor
+	}
+}
+
+// RateLimiter is used to add rate limiting check per node. It defaults to ratelimiting.NoOp.
+func RateLimiter(limiter ratelimiting.RateLimiter) SchemaOpt {
+	return func(s *Schema) {
+		s.ratelimiter = limiter
 	}
 }
 
@@ -160,9 +178,11 @@ func (s *Schema) exec(ctx context.Context, queryString string, operationName str
 			Vars:   variables,
 			Schema: s.schema,
 		},
-		Limiter: make(chan struct{}, s.maxParallelism),
-		Tracer:  s.tracer,
-		Logger:  s.logger,
+		Limiter:     make(chan struct{}, s.maxParallelism),
+		Tracer:      s.tracer,
+		Logger:      s.logger,
+		RateLimiter: s.ratelimiter,
+		Authorizor:  s.authorizor,
 	}
 	varTypes := make(map[string]*introspection.Type)
 	for _, v := range op.Vars {
